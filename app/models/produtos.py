@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Optional, List
-from sqlalchemy import Integer, String, Boolean, Float, ForeignKey
+from sqlalchemy import Integer, String, Boolean, Float, ForeignKey, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from .base import Base, TimestampMixin
@@ -26,6 +26,9 @@ class Produto(Base, TimestampMixin):
     estoque_minimo: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     custo_medio: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     preco_reposicao: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    foto_path: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    foto_mime: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
+    foto_nome_original: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
 
     produto_base: Mapped["ProdutoBase"] = relationship("ProdutoBase", back_populates="variacoes")
     marca: Mapped[Optional["Marca"]] = relationship("Marca", back_populates="produtos")

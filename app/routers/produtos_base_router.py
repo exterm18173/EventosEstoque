@@ -60,7 +60,7 @@ def excluir(produto_base_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404 if "não encontrado" in msg.lower() else 400, detail=msg)
 
 
-@router.get("/{produto_base_id}/variacoes", response_model=list["ProdutoRead"])
+@router.get("/{produto_base_id}/variacoes", response_model=list[ProdutoRead])
 def listar_variacoes(produto_base_id: int, db: Session = Depends(get_db)):
     try:
         return service.variacoes(db, produto_base_id)

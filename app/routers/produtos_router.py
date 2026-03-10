@@ -12,7 +12,8 @@ from app.services.produtos_service import ProdutoService
 # schemas que já existem nos models, mas endpoints de leitura só (vamos criar nos próximos passos)
 from app.schemas.produto_embalagens import EmbalagemRead  # próximo passo
 from app.schemas.codigos_barras import CodigoBarrasRead   # próximo passo
-
+from fastapi import File, UploadFile
+from fastapi.responses import FileResponse
 router = APIRouter(prefix="/produtos", tags=["Produtos"])
 service = ProdutoService()
 
@@ -100,7 +101,7 @@ def movimentacoes(
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/{produto_id}/embalagens", response_model=list["EmbalagemRead"])
+@router.get("/{produto_id}/embalagens", response_model=list[EmbalagemRead])
 def embalagens(produto_id: int, db: Session = Depends(get_db)):
     try:
         return service.embalagens(db, produto_id)
@@ -108,9 +109,37 @@ def embalagens(produto_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=str(e))
 
 
-@router.get("/{produto_id}/codigos-barras", response_model=list["CodigoBarrasRead"])
+@router.get("/{produto_id}/codigos-barras", response_model=list[CodigoBarrasRead])
 def codigos_barras(produto_id: int, db: Session = Depends(get_db)):
     try:
         return service.codigos_barras(db, produto_id)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    
+@router.post("/{produto_id}/foto", response_model=ProdutoRead)
+def upload_foto(produto_id: int, file: UploadFile = File(...), db: Session = Depends(get_db)):
+    try:
+        return service.upload_foto(db, produto_id, file)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@router.get("/{produto_id}/foto")
+def download_foto(produto_id: int, db: Session = Depends(get_db)):
+    try:
+        p = service.get(db, produto_id)
+        if not p.foto_path:
+            raise ValueError("Produto sem foto.")
+        return FileResponse(
+            path=p.foto_path,
+            media_type=p.foto_mime or "application/octet-stream",
+            filename=p.foto_nome_original or "foto",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@router.delete("/{produto_id}/foto", response_model=ProdutoRead)
+def excluir_foto(produto_id: int, db: Session = Depends(get_db)):
+    try:
+        return service.delete_foto(db, produto_id)
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))

@@ -22,3 +22,16 @@ from .nfe_itens import NfeItem
 from .alugueis import Aluguel
 from .aluguel_itens import AluguelItem
 from app.models.despesas import Despesa
+from .orcamento import Orcamento, OrcamentoItem
+from .aluguel_devolucao_fotos import AluguelDevolucaoFoto
+from .mao_de_obra import MaoDeObraGrupo, MaoDeObraItem
+from .mao_de_obra_modelo import MaoDeObraModelo, MaoDeObraModeloGrupo, MaoDeObraModeloItem
+from .setores_consumo import SetorConsumo
+
+# ===== NOVOS MODELS DO MÓDULO FISCAL =====
+from .certificado_fiscal import CertificadoFiscal
+from .nota_recebida import NotaRecebida
+from .nota_recebida_item import NotaRecebidaItem
+from .nota_conciliacao_item import NotaConciliacaoItem
+from .fornecedor_produto_vinculo import FornecedorProdutoVinculo
+from .nota_importacao_log import NotaImportacaoLog

@@ -61,3 +61,9 @@ class AluguelAcaoResponse(BaseModel):
     aluguel_id: int
     status: str
     movimentacoes_criadas: int
+class AluguelDevolverItemRequest(BaseModel):
+    local_destino_id: int
+    usuario_id: int
+    quantidade_devolver_base: float = Field(gt=0)
+    origem: str = Field(default="aluguel", max_length=30)
+    observacao: Optional[str] = None

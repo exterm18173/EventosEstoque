@@ -10,7 +10,7 @@ from app.schemas.aluguel_itens import AluguelItemCreate, AluguelItemUpdate, Alug
 from app.services.alugueis_service import AlugueisService
 from app.services.aluguel_itens_service import AluguelItensService
 from app.services.aluguel_acoes_service import AluguelAcoesService
-
+from fastapi import File, UploadFile, Form
 router = APIRouter(prefix="/aluguels", tags=["Aluguéis"])
 service = AlugueisService()
 itens_service = AluguelItensService()
@@ -124,5 +124,41 @@ def devolucao(aluguel_id: int, payload: AluguelDevolucaoRequest, db: Session = D
         )
         aluguel = service.get(db, aluguel_id)
         return AluguelAcaoResponse(aluguel_id=aluguel_id, status=aluguel.status, movimentacoes_criadas=criadas)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    
+
+@router.post("/{aluguel_id}/itens/{item_id}/devolver", response_model=AluguelAcaoResponse)
+def devolver_item(
+    aluguel_id: int,
+    item_id: int,
+    local_destino_id: int = Form(...),
+    usuario_id: int = Form(...),
+    quantidade_devolver_base: float = Form(...),
+    lote_id: int | None = Form(None),  # <-- novo
+    origem: str = Form("aluguel"),
+    observacao: str | None = Form(None),
+    foto: UploadFile = File(...),  # OBRIGATÓRIA
+    db: Session = Depends(get_db),
+):
+    try:
+        criadas = acoes_service.devolver_item_com_foto(
+            db,
+            aluguel_id=aluguel_id,
+            item_id=item_id,
+            local_destino_id=local_destino_id,
+            usuario_id=usuario_id,
+            quantidade_devolver_base=quantidade_devolver_base,
+            lote_id=lote_id,
+            origem=origem,
+            observacao=observacao,
+            foto=foto,
+        )
+        aluguel = service.get(db, aluguel_id)
+        return AluguelAcaoResponse(
+            aluguel_id=aluguel_id,
+            status=aluguel.status,
+            movimentacoes_criadas=criadas,
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

@@ -37,7 +37,7 @@ class EventoService:
         if data_fim:
             stmt = stmt.where(Evento.data_inicio <= data_fim)
 
-        stmt = stmt.order_by(Evento.data_inicio.desc(), Evento.nome.asc())
+        stmt = stmt.order_by(Evento.data_inicio.desc(), Evento.id.desc())
         return list(db.execute(stmt).scalars().all())
 
     def get(self, db: Session, evento_id: int) -> Evento:
@@ -57,11 +57,16 @@ class EventoService:
             cliente_id=data.cliente_id,
             nome=data.nome.strip(),
             data_inicio=data.data_inicio,
-            data_fim=data.data_fim,
-            status=data.status.strip() if data.status else "planejado",
+            data_fim=data.data_fim or data.data_inicio,  # se quiser permitir vazio
+            status=(data.status.strip() if data.status else "planejado"),
             local_evento=(data.local_evento.strip() if data.local_evento else None),
             observacao=data.observacao,
+
+            # ✅ receitas
+            receita=data.receita,
+            receita_convite_extra=data.receita_convite_extra,
         )
+
         db.add(obj)
         db.commit()
         db.refresh(obj)
@@ -96,6 +101,13 @@ class EventoService:
 
         if data.observacao is not None or "observacao" in data.model_fields_set:
             obj.observacao = data.observacao
+
+        # ✅ receitas (respeitando model_fields_set)
+        if data.receita is not None or "receita" in data.model_fields_set:
+            obj.receita = data.receita
+
+        if data.receita_convite_extra is not None or "receita_convite_extra" in data.model_fields_set:
+            obj.receita_convite_extra = data.receita_convite_extra
 
         db.commit()
         db.refresh(obj)

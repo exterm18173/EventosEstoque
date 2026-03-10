@@ -14,3 +14,4 @@ class Fornecedor(Base, TimestampMixin):
 
     compras = relationship("Compra", back_populates="fornecedor")
     nfe_documentos = relationship("NfeDocumento", back_populates="fornecedor")
+    notas_recebidas = relationship("NotaRecebida", back_populates="fornecedor")

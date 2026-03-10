@@ -48,6 +48,9 @@ class ProdutoRead(ProdutoBaseSchema):
     id: int
     created_at: datetime
     updated_at: datetime
+    foto_path: Optional[str] = None
+    foto_mime: Optional[str] = None
+    foto_nome_original: Optional[str] = None
 
     class Config:
         from_attributes = True

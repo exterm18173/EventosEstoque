@@ -24,4 +24,10 @@ class Compra(Base, TimestampMixin):
     usuario: Mapped["Usuario"] = relationship("Usuario", back_populates="compras")
     nfe_documento: Mapped[Optional["NfeDocumento"]] = relationship("NfeDocumento", back_populates="compra")
 
-    itens: Mapped[List["CompraItem"]] = relationship("CompraItem", back_populates="compra", cascade="all, delete-orphan")
+    itens: Mapped[List["CompraItem"]] = relationship(
+        "CompraItem",
+        back_populates="compra",
+        cascade="all, delete-orphan",
+    )
+
+    notas_recebidas: Mapped[List["NotaRecebida"]] = relationship("NotaRecebida", back_populates="compra")

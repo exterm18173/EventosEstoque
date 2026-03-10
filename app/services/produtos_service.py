@@ -14,6 +14,12 @@ from app.models.produto_codigos_barras import ProdutoCodigoBarras
 
 from app.schemas.produtos import ProdutoCreate, ProdutoUpdate
 
+import os, uuid, mimetypes
+from fastapi import UploadFile
+
+STORAGE_DIR = os.path.join("storage", "produtos")
+ALLOWED_MIME = {"image/jpeg", "image/png", "image/webp"}
+
 
 class ProdutoService:
     def list(
@@ -176,3 +182,42 @@ class ProdutoService:
         self.get(db, produto_id)
         stmt = select(ProdutoCodigoBarras).where(ProdutoCodigoBarras.produto_id == produto_id).order_by(ProdutoCodigoBarras.principal.desc(), ProdutoCodigoBarras.codigo.asc())
         return list(db.execute(stmt).scalars().all())
+    def upload_foto(self, db: Session, produto_id: int, file: UploadFile) -> Produto:
+        p = self.get(db, produto_id)
+
+        if not file.content_type or file.content_type not in ALLOWED_MIME:
+            raise ValueError("Formato inválido. Use JPG/PNG/WEBP.")
+
+        os.makedirs(STORAGE_DIR, exist_ok=True)
+
+        ext = mimetypes.guess_extension(file.content_type) or ".jpg"
+        filename = f"{produto_id}_{uuid.uuid4().hex}{ext}"
+        path = os.path.join(STORAGE_DIR, filename)
+
+        with open(path, "wb") as f:
+            f.write(file.file.read())
+
+        # (opcional) apagar foto antiga
+        if p.foto_path and os.path.exists(p.foto_path):
+            try: os.remove(p.foto_path)
+            except: pass
+
+        p.foto_path = path
+        p.foto_mime = file.content_type
+        p.foto_nome_original = file.filename
+
+        db.commit()
+        db.refresh(p)
+        return p
+
+    def delete_foto(self, db: Session, produto_id: int) -> Produto:
+        p = self.get(db, produto_id)
+        if p.foto_path and os.path.exists(p.foto_path):
+            try: os.remove(p.foto_path)
+            except: pass
+        p.foto_path = None
+        p.foto_mime = None
+        p.foto_nome_original = None
+        db.commit()
+        db.refresh(p)
+        return p
