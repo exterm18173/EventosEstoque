@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import shutil
+import uuid
+from pathlib import Path
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile, status
 from sqlalchemy.orm import Session
 
 from app.db.session import get_db
@@ -13,6 +16,7 @@ from app.schemas.certificado_fiscal import (
     CertificadoFiscalSincronizacaoResponse,
     CertificadoFiscalTesteResponse,
     CertificadoFiscalUpdate,
+    CertificadoFiscalUploadResponse,
 )
 from app.services.certificado_fiscal_service import CertificadoFiscalService
 from app.services.nota_sincronizacao_service import NotaSincronizacaoService
@@ -21,6 +25,9 @@ router = APIRouter(prefix="/certificados-fiscais", tags=["Fiscal - Certificados"
 
 service = CertificadoFiscalService()
 sincronizacao_service = NotaSincronizacaoService()
+
+UPLOAD_DIR = Path("storage/certificados")
+UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 
 @router.get("", response_model=list[CertificadoFiscalListItem])
@@ -42,6 +49,42 @@ def obter(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@router.post("/upload", response_model=CertificadoFiscalUploadResponse, status_code=status.HTTP_201_CREATED)
+async def upload_certificado(
+    file: UploadFile = File(...),
+):
+    try:
+        nome_original = file.filename or "certificado.pfx"
+        ext = Path(nome_original).suffix.lower()
+
+        if ext not in {".pfx", ".p12"}:
+            raise HTTPException(
+                status_code=400,
+                detail="Envie um arquivo .pfx ou .p12.",
+            )
+
+        nome_gerado = f"{uuid.uuid4().hex}{ext}"
+        destino = UPLOAD_DIR / nome_gerado
+
+        with destino.open("wb") as buffer:
+            shutil.copyfileobj(file.file, buffer)
+
+        tamanho = destino.stat().st_size
+
+        return CertificadoFiscalUploadResponse(
+            arquivo_path=str(destino),
+            nome_original=nome_original,
+            tamanho_bytes=tamanho,
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Erro ao salvar arquivo do certificado: {str(e)}",
+        )
+
+
 @router.post("", response_model=CertificadoFiscalRead, status_code=status.HTTP_201_CREATED)
 def criar(
     payload: CertificadoFiscalCreate,
@@ -50,8 +93,7 @@ def criar(
     try:
         return service.create(db, payload)
     except ValueError as e:
-        msg = str(e)
-        raise HTTPException(status_code=400, detail=msg)
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @router.put("/{certificado_id}", response_model=CertificadoFiscalRead)

@@ -7,14 +7,14 @@ from typing import Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
+from app.integrations.sefaz.distribuicao_dfe import DistribuicaoDfeClient
+from app.integrations.sefaz.certificado_manager import CertificadoManager
 from app.models.certificado_fiscal import CertificadoFiscal
 from app.schemas.certificado_fiscal import (
     CertificadoFiscalCreate,
-    CertificadoFiscalUpdate,
     CertificadoFiscalTesteResponse,
+    CertificadoFiscalUpdate,
 )
-from app.integrations.sefaz.certificado_manager import CertificadoManager
 
 
 class CertificadoFiscalService:
@@ -34,17 +34,24 @@ class CertificadoFiscalService:
         return obj
 
     def create(self, db: Session, data: CertificadoFiscalCreate) -> CertificadoFiscal:
+        cnpj = self._only_digits(data.cnpj)
+
         existente = db.execute(
-            select(CertificadoFiscal).where(CertificadoFiscal.cnpj == data.cnpj)
+            select(CertificadoFiscal).where(CertificadoFiscal.cnpj == cnpj)
         ).scalar_one_or_none()
         if existente:
             raise ValueError("Já existe um certificado cadastrado para este CNPJ.")
 
         arquivo_path = self._normalize_file_path(data.arquivo_path)
 
+        try:
+            meta = CertificadoManager().load_metadata(str(arquivo_path), data.senha)
+        except Exception as e:
+            raise ValueError(f"Não foi possível validar o certificado: {str(e)}")
+
         obj = CertificadoFiscal(
             empresa_nome=data.empresa_nome.strip(),
-            cnpj=self._only_digits(data.cnpj),
+            cnpj=cnpj,
             ambiente=data.ambiente.strip(),
             tipo_certificado=data.tipo_certificado.strip(),
             arquivo_path=str(arquivo_path),
@@ -52,12 +59,8 @@ class CertificadoFiscalService:
             sincronizacao_automatica=data.sincronizacao_automatica,
             ativo=data.ativo,
             observacao=data.observacao.strip() if data.observacao else None,
+            data_validade=meta.get("data_validade"),
         )
-
-        # tenta ler validade já no cadastro
-        meta = self._try_read_certificate_metadata(obj.arquivo_path, data.senha)
-        if meta:
-            obj.data_validade = meta.get("data_validade")
 
         db.add(obj)
         db.commit()
@@ -91,9 +94,6 @@ class CertificadoFiscalService:
         if data.arquivo_path is not None:
             obj.arquivo_path = str(self._normalize_file_path(data.arquivo_path))
 
-        if data.senha is not None:
-            obj.senha_criptografada = self._encode_password(data.senha)
-
         if data.sincronizacao_automatica is not None:
             obj.sincronizacao_automatica = data.sincronizacao_automatica
 
@@ -103,11 +103,16 @@ class CertificadoFiscalService:
         if data.observacao is not None:
             obj.observacao = data.observacao.strip() if data.observacao else None
 
-        # revalida certificado se arquivo ou senha mudarem
+        if data.senha is not None:
+            obj.senha_criptografada = self._encode_password(data.senha)
+
         if data.arquivo_path is not None or data.senha is not None:
             senha = data.senha if data.senha is not None else self._decode_password(obj.senha_criptografada)
-            meta = self._try_read_certificate_metadata(obj.arquivo_path, senha)
-            obj.data_validade = meta.get("data_validade") if meta else None
+            try:
+                meta = CertificadoManager().load_metadata(obj.arquivo_path, senha)
+                obj.data_validade = meta.get("data_validade")
+            except Exception as e:
+                raise ValueError(f"Não foi possível validar o certificado atualizado: {str(e)}")
 
         db.commit()
         db.refresh(obj)
@@ -127,9 +132,25 @@ class CertificadoFiscalService:
             obj.data_validade = meta.get("data_validade")
             db.commit()
 
+            client = DistribuicaoDfeClient(
+                certificado_path=obj.arquivo_path,
+                certificado_password=senha,
+                ambiente=obj.ambiente,
+                cnpj=obj.cnpj,
+            )
+
+            resultado = client.consultar_documentos(ultimo_nsu=obj.ultimo_nsu)
+
+            cstat = resultado.get("cstat")
+            xmotivo = resultado.get("xmotivo")
+            qtd_docs = len(resultado.get("documentos", []) or [])
+
             return CertificadoFiscalTesteResponse(
                 sucesso=True,
-                mensagem="Certificado validado com sucesso.",
+                mensagem=(
+                    f"Certificado validado e comunicação com SEFAZ realizada. "
+                    f"cStat={cstat}, xMotivo={xmotivo}, documentos retornados={qtd_docs}."
+                ),
                 data_validade=meta.get("data_validade"),
                 titular=meta.get("titular"),
                 documento_titular=meta.get("documento_titular"),
@@ -137,9 +158,8 @@ class CertificadoFiscalService:
         except Exception as e:
             return CertificadoFiscalTesteResponse(
                 sucesso=False,
-                mensagem=f"Falha ao validar certificado: {str(e)}",
+                mensagem=f"Falha ao validar certificado/comunicação: {str(e)}",
             )
-
     def get_plain_password(self, certificado: CertificadoFiscal) -> str:
         return self._decode_password(certificado.senha_criptografada)
 
@@ -159,6 +179,8 @@ class CertificadoFiscalService:
         path = Path(raw_path)
         if not path.exists():
             raise ValueError("Arquivo do certificado não encontrado.")
+        if not path.is_file():
+            raise ValueError("O caminho informado para o certificado é inválido.")
         if path.suffix.lower() not in {".pfx", ".p12"}:
             raise ValueError("Certificado inválido. Use arquivo .pfx ou .p12.")
         return path
@@ -171,9 +193,3 @@ class CertificadoFiscalService:
 
     def _decode_password(self, encoded: str) -> str:
         return base64.b64decode(encoded.encode("utf-8")).decode("utf-8")
-
-    def _try_read_certificate_metadata(self, arquivo_path: str, senha: str) -> Optional[dict]:
-        try:
-            return CertificadoManager().load_metadata(arquivo_path, senha)
-        except Exception:
-            return None

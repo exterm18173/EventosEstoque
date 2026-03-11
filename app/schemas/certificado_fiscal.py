@@ -95,3 +95,9 @@ class CertificadoFiscalSincronizacaoResponse(BaseModel):
     notas_atualizadas: int
     ultimo_nsu: Optional[str] = None
     mensagem: str
+
+
+class CertificadoFiscalUploadResponse(BaseModel):
+    arquivo_path: str
+    nome_original: str
+    tamanho_bytes: int
