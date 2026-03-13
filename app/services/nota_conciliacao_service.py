@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from difflib import SequenceMatcher
 from typing import Optional
-
+from datetime import date
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
+from sqlalchemy.exc import IntegrityError
 from app.models.lotes import Lote
 from app.models.nota_conciliacao_item import NotaConciliacaoItem
 from app.models.nota_recebida import NotaRecebida
@@ -40,7 +40,13 @@ class NotaConciliacaoService:
 
         db.commit()
 
-    def auto_conciliar_item(self, db: Session, item_id: int, *, commit: bool = True) -> NotaConciliacaoItem:
+    def auto_conciliar_item(
+        self,
+        db: Session,
+        item_id: int,
+        *,
+        commit: bool = True,
+    ) -> NotaConciliacaoItem:
         item = self._get_item(db, item_id)
         nota = db.get(NotaRecebida, item.nota_recebida_id)
         if not nota:
@@ -48,7 +54,7 @@ class NotaConciliacaoService:
 
         conciliacao = self._get_or_create_conciliacao(db, item.id)
 
-        # 1. por código de barras
+        # 1. por código de barras -> vincula automaticamente
         if item.codigo_barras:
             barcode = db.execute(
                 select(ProdutoCodigoBarras).where(
@@ -58,27 +64,37 @@ class NotaConciliacaoService:
             ).scalar_one_or_none()
 
             if barcode:
+                unidade_id = self._resolve_unidade_by_embalagem_or_produto(
+                    db,
+                    barcode.embalagem_id,
+                    barcode.produto_id,
+                )
+                fator = self._resolve_fator_by_embalagem(db, barcode.embalagem_id)
+
                 conciliacao.acao = "vincular_existente"
                 conciliacao.produto_id = barcode.produto_id
                 conciliacao.embalagem_id = barcode.embalagem_id
-                conciliacao.unidade_informada_id = self._resolve_unidade_by_embalagem_or_produto(
-                    db, barcode.embalagem_id, barcode.produto_id
-                )
-                conciliacao.fator_para_base = self._resolve_fator_by_embalagem(db, barcode.embalagem_id)
+                conciliacao.unidade_informada_id = unidade_id
+                conciliacao.fator_para_base = fator
                 conciliacao.barcode_final = item.codigo_barras
-                conciliacao.validado = False
+                conciliacao.lote_id = None
+                conciliacao.validado = True
+                conciliacao.criar_produto_novo = False
+                conciliacao.nome_produto_sugerido = None
+                conciliacao.observacao = None
 
                 item.produto_id = barcode.produto_id
                 item.embalagem_id = barcode.embalagem_id
-                item.unidade_informada_id = conciliacao.unidade_informada_id
-                item.status_conciliacao = "sugerido"
+                item.unidade_informada_id = unidade_id
+                item.lote_id = None
+                item.status_conciliacao = "vinculado"
 
                 if commit:
                     db.commit()
                     db.refresh(conciliacao)
                 return conciliacao
 
-        # 2. por vínculo fornecedor-produto
+        # 2. por vínculo fornecedor-produto -> vincula automaticamente
         if nota.fornecedor_cnpj:
             vinculo = self.vinculo_service.find_best_match(
                 db,
@@ -93,24 +109,36 @@ class NotaConciliacaoService:
                 conciliacao.unidade_informada_id = vinculo.unidade_informada_id
                 conciliacao.fator_para_base = vinculo.fator_para_base or 1.0
                 conciliacao.barcode_final = item.codigo_barras
-                conciliacao.validado = False
+                conciliacao.lote_id = None
+                conciliacao.validado = True
+                conciliacao.criar_produto_novo = False
+                conciliacao.nome_produto_sugerido = None
+                conciliacao.observacao = None
 
                 item.produto_id = vinculo.produto_id
                 item.embalagem_id = vinculo.embalagem_id
                 item.unidade_informada_id = vinculo.unidade_informada_id
-                item.status_conciliacao = "sugerido"
+                item.lote_id = None
+                item.status_conciliacao = "vinculado"
 
                 if commit:
                     db.commit()
                     db.refresh(conciliacao)
                 return conciliacao
 
-        # 3. por similaridade de descrição
+        # 3. por similaridade de descrição -> conflito para revisão manual
         produto = self._find_similar_product(db, item.descricao)
         if produto:
             conciliacao.acao = "conflito"
             conciliacao.produto_id = produto.id
+            conciliacao.embalagem_id = None
+            conciliacao.unidade_informada_id = None
+            conciliacao.fator_para_base = None
+            conciliacao.barcode_final = item.codigo_barras
+            conciliacao.lote_id = None
+            conciliacao.criar_produto_novo = False
             conciliacao.nome_produto_sugerido = produto.nome_comercial
+            conciliacao.observacao = None
             conciliacao.validado = False
 
             item.status_conciliacao = "conflito"
@@ -120,11 +148,17 @@ class NotaConciliacaoService:
                 db.refresh(conciliacao)
             return conciliacao
 
-        # 4. novo produto
+        # 4. sem match -> sugerir criação de produto
         conciliacao.acao = "criar_produto"
+        conciliacao.produto_id = None
+        conciliacao.embalagem_id = None
+        conciliacao.unidade_informada_id = None
+        conciliacao.fator_para_base = None
+        conciliacao.barcode_final = item.codigo_barras
+        conciliacao.lote_id = None
         conciliacao.criar_produto_novo = True
         conciliacao.nome_produto_sugerido = item.descricao
-        conciliacao.barcode_final = item.codigo_barras
+        conciliacao.observacao = None
         conciliacao.validado = False
 
         item.status_conciliacao = "novo_produto"
@@ -162,13 +196,27 @@ class NotaConciliacaoService:
             if not lote or lote.produto_id != data.produto_id:
                 raise ValueError("Lote inválido para o produto informado.")
 
+        barcode_final = self._sanitize_barcode(data.barcode_final)
+        if barcode_final:
+            existente = db.execute(
+                select(ProdutoCodigoBarras).where(
+                    ProdutoCodigoBarras.codigo == barcode_final
+                )
+            ).scalar_one_or_none()
+
+            if existente and (
+                existente.produto_id != data.produto_id
+                or existente.embalagem_id != data.embalagem_id
+            ):
+                raise ValueError("Código de barras já cadastrado para outro produto/embalagem.")
+
         conciliacao = self._get_or_create_conciliacao(db, item.id)
         conciliacao.acao = "vincular_existente"
         conciliacao.produto_id = data.produto_id
         conciliacao.embalagem_id = data.embalagem_id
         conciliacao.unidade_informada_id = data.unidade_informada_id
         conciliacao.fator_para_base = data.fator_para_base
-        conciliacao.barcode_final = data.barcode_final
+        conciliacao.barcode_final = barcode_final
         conciliacao.lote_id = data.lote_id
         conciliacao.observacao = data.observacao
         conciliacao.validado = True
@@ -218,99 +266,102 @@ class NotaConciliacaoService:
         if data.marca_id is not None and not db.get(Marca, data.marca_id):
             raise ValueError("Marca inválida.")
 
-        unidade = db.get(Unidade, data.unidade_base_id)
-        if not unidade:
+        unidade_base = db.get(Unidade, data.unidade_base_id)
+        if not unidade_base:
             raise ValueError("Unidade base inválida.")
 
-        if not db.get(Unidade, data.unidade_informada_id):
+        unidade_informada = db.get(Unidade, data.unidade_informada_id)
+        if not unidade_informada:
             raise ValueError("Unidade informada inválida.")
 
-        produto = Produto(
-            produto_base_id=data.produto_base_id,
-            marca_id=data.marca_id,
-            nome_comercial=data.nome_comercial.strip(),
-            unidade_base_id=data.unidade_base_id,
-            sku=data.sku.strip() if data.sku else None,
-            ativo=data.ativo,
-            eh_alugavel=data.eh_alugavel,
-            controla_lote=data.controla_lote,
-            controla_validade=data.controla_validade,
-            estoque_minimo=data.estoque_minimo,
-            custo_medio=data.custo_medio if data.custo_medio is not None else item.valor_unitario,
-            preco_reposicao=data.preco_reposicao if data.preco_reposicao is not None else item.valor_unitario,
-        )
-        db.add(produto)
-        db.flush()
+        barcode_final = self._sanitize_barcode(data.barcode_final)
+        if barcode_final:
+            self._validate_barcode_unico(db, barcode_final)
 
-        if data.barcode_final:
-            embalagem_id = data.embalagem_id
-            if embalagem_id is not None:
-                emb = db.get(ProdutoEmbalagem, embalagem_id)
-                if not emb or emb.produto_id != produto.id:
-                    embalagem_id = None
+        try:
+            produto = Produto(
+                produto_base_id=data.produto_base_id,
+                marca_id=data.marca_id,
+                nome_comercial=data.nome_comercial.strip(),
+                unidade_base_id=data.unidade_base_id,
+                sku=data.sku.strip() if data.sku else None,
+                ativo=data.ativo,
+                eh_alugavel=data.eh_alugavel,
+                controla_lote=data.controla_lote,
+                controla_validade=data.controla_validade,
+                estoque_minimo=data.estoque_minimo,
+                custo_medio=data.custo_medio if data.custo_medio is not None else item.valor_unitario,
+                preco_reposicao=data.preco_reposicao if data.preco_reposicao is not None else item.valor_unitario,
+            )
+            db.add(produto)
+            db.flush()
 
-            if embalagem_id is None:
-                emb = db.execute(
-                    select(ProdutoEmbalagem).where(
-                        ProdutoEmbalagem.produto_id == produto.id
-                    )
-                ).scalar_one_or_none()
-                embalagem_id = emb.id if emb else None
-
-            if embalagem_id is not None:
-                barcode_existente = db.execute(
-                    select(ProdutoCodigoBarras).where(
-                        ProdutoCodigoBarras.codigo == data.barcode_final.strip()
-                    )
-                ).scalar_one_or_none()
-
-                if not barcode_existente:
-                    db.add(
-                        ProdutoCodigoBarras(
-                            produto_id=produto.id,
-                            embalagem_id=embalagem_id,
-                            codigo=data.barcode_final.strip(),
-                            tipo="ean13",
-                            principal=True,
-                            ativo=True,
-                        )
-                    )
-
-        conciliacao = self._get_or_create_conciliacao(db, item.id)
-        conciliacao.acao = "criar_produto"
-        conciliacao.produto_id = produto.id
-        conciliacao.embalagem_id = data.embalagem_id
-        conciliacao.unidade_informada_id = data.unidade_informada_id
-        conciliacao.fator_para_base = data.fator_para_base
-        conciliacao.barcode_final = data.barcode_final
-        conciliacao.lote_id = data.lote_id
-        conciliacao.criar_produto_novo = True
-        conciliacao.nome_produto_sugerido = produto.nome_comercial
-        conciliacao.observacao = data.observacao
-        conciliacao.validado = True
-
-        item.produto_id = produto.id
-        item.embalagem_id = data.embalagem_id
-        item.unidade_informada_id = data.unidade_informada_id
-        item.lote_id = data.lote_id
-        item.status_conciliacao = "vinculado"
-        item.observacao = data.observacao
-
-        if nota.fornecedor_cnpj:
-            self.vinculo_service.upsert_from_decision(
+            embalagem = self._create_embalagem_inicial(
                 db,
-                fornecedor_cnpj=nota.fornecedor_cnpj,
-                codigo_fornecedor=item.codigo_fornecedor,
-                descricao_fornecedor=item.descricao,
                 produto_id=produto.id,
-                embalagem_id=data.embalagem_id,
                 unidade_informada_id=data.unidade_informada_id,
                 fator_para_base=data.fator_para_base,
+                nome_embalagem=data.nome_embalagem,
             )
 
-        db.commit()
-        db.refresh(conciliacao)
-        return conciliacao
+            self._create_barcode_if_needed(
+                db,
+                produto_id=produto.id,
+                embalagem_id=embalagem.id,
+                codigo=barcode_final,
+            )
+
+            lote_id = self._create_lote_if_needed(
+                db,
+                produto_id=produto.id,
+                controla_lote=data.controla_lote,
+                codigo_lote=data.codigo_lote,
+                local_id=data.local_id,
+                validade_lote=data.validade_lote,
+            )
+
+            conciliacao = self._get_or_create_conciliacao(db, item.id)
+            conciliacao.acao = "criar_produto"
+            conciliacao.produto_id = produto.id
+            conciliacao.embalagem_id = embalagem.id
+            conciliacao.unidade_informada_id = data.unidade_informada_id
+            conciliacao.fator_para_base = data.fator_para_base
+            conciliacao.barcode_final = barcode_final
+            conciliacao.lote_id = lote_id
+            conciliacao.criar_produto_novo = True
+            conciliacao.nome_produto_sugerido = produto.nome_comercial
+            conciliacao.observacao = data.observacao
+            conciliacao.validado = True
+
+            item.produto_id = produto.id
+            item.embalagem_id = embalagem.id
+            item.unidade_informada_id = data.unidade_informada_id
+            item.lote_id = lote_id
+            item.status_conciliacao = "vinculado"
+            item.observacao = data.observacao
+
+            if nota.fornecedor_cnpj:
+                self.vinculo_service.upsert_from_decision(
+                    db,
+                    fornecedor_cnpj=nota.fornecedor_cnpj,
+                    codigo_fornecedor=item.codigo_fornecedor,
+                    descricao_fornecedor=item.descricao,
+                    produto_id=produto.id,
+                    embalagem_id=embalagem.id,
+                    unidade_informada_id=data.unidade_informada_id,
+                    fator_para_base=data.fator_para_base,
+                )
+
+            db.commit()
+            db.refresh(conciliacao)
+            return conciliacao
+
+        except IntegrityError:
+            db.rollback()
+            raise ValueError("Não foi possível criar o produto por conflito de integridade.")
+        except Exception:
+            db.rollback()
+            raise
 
     def ignorar_item(
         self,
@@ -365,6 +416,119 @@ class NotaConciliacaoService:
             "ignorados": ignorados,
             "conflitos": conflitos,
         }
+
+    def _sanitize_barcode(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    def _validate_barcode_unico(
+        self,
+        db: Session,
+        codigo: Optional[str],
+    ) -> Optional[str]:
+        codigo = self._sanitize_barcode(codigo)
+        if not codigo:
+            return None
+
+        existente = db.execute(
+            select(ProdutoCodigoBarras).where(
+                ProdutoCodigoBarras.codigo == codigo
+            )
+        ).scalar_one_or_none()
+
+        if existente:
+            raise ValueError("Código de barras já cadastrado para outro produto.")
+
+        return codigo
+
+    def _create_embalagem_inicial(
+        self,
+        db: Session,
+        *,
+        produto_id: int,
+        unidade_informada_id: int,
+        fator_para_base: float,
+        nome_embalagem: Optional[str],
+    ) -> ProdutoEmbalagem:
+        nome = (nome_embalagem or "").strip().upper() or "UN"
+
+        embalagem = ProdutoEmbalagem(
+            produto_id=produto_id,
+            nome=nome,
+            unidade_id=unidade_informada_id,
+            fator_para_base=float(fator_para_base),
+            permite_fracionar=float(fator_para_base) == 1.0,
+            principal=True,
+        )
+        db.add(embalagem)
+        db.flush()
+        return embalagem
+
+    def _create_barcode_if_needed(
+        self,
+        db: Session,
+        *,
+        produto_id: int,
+        embalagem_id: int,
+        codigo: Optional[str],
+    ) -> None:
+        codigo = self._sanitize_barcode(codigo)
+        if not codigo:
+            return
+
+        self._validate_barcode_unico(db, codigo)
+
+        db.add(
+            ProdutoCodigoBarras(
+                produto_id=produto_id,
+                embalagem_id=embalagem_id,
+                codigo=codigo,
+                tipo="ean13",
+                principal=True,
+                ativo=True,
+            )
+        )
+        db.flush()
+
+    def _create_lote_if_needed(
+        self,
+        db: Session,
+        *,
+        produto_id: int,
+        controla_lote: bool,
+        codigo_lote: Optional[str],
+        local_id: Optional[int],
+        validade_lote: Optional[date],
+    ) -> Optional[int]:
+        if not controla_lote:
+            return None
+
+        codigo_lote = (codigo_lote or "").strip()
+        if not codigo_lote:
+            return None
+
+        if local_id is None:
+            raise ValueError("Local do lote é obrigatório quando o produto controla lote.")
+
+        from app.models.locais import Local
+
+        local = db.get(Local, local_id)
+        if not local:
+            raise ValueError("Local do lote inválido.")
+
+        lote = Lote(
+            produto_id=produto_id,
+            codigo_lote=codigo_lote,
+            validade=validade_lote,
+            quantidade_base_atual=0,
+            local_id=local_id,
+        )
+        db.add(lote)
+        db.flush()
+        return lote.id
+
 
     def _get_item(self, db: Session, item_id: int) -> NotaRecebidaItem:
         item = db.get(NotaRecebidaItem, item_id)

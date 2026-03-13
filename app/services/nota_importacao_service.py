@@ -174,7 +174,11 @@ class NotaImportacaoService:
 
         for item in itens:
             fator = self._resolve_fator(db, item.id)
-            pronto = item.status_conciliacao == "vinculado" and item.produto_id is not None and item.unidade_informada_id is not None
+            pronto = (
+                item.status_conciliacao == "vinculado"
+                and item.produto_id is not None
+                and item.unidade_informada_id is not None
+            )
 
             if item.status_conciliacao == "ignorado":
                 ignorados += 1
@@ -204,10 +208,13 @@ class NotaImportacaoService:
                 }
             )
 
+        compra_gerada = nota.compra_id is not None
+        compra_confirmada = nota.status == "importada"
+
         return {
             "nota_recebida_id": nota.id,
             "fornecedor_id": nota.fornecedor_id,
-            "fornecedor_nome": nota.fornecedor_nome,
+            "fornecedor_nome": nota.fornecedor_nome or "",
             "fornecedor_cnpj": nota.fornecedor_cnpj,
             "numero": nota.numero,
             "serie": nota.serie,
@@ -217,6 +224,10 @@ class NotaImportacaoService:
             "itens_pendentes": pendentes,
             "itens_ignorados": ignorados,
             "valor_total_nota": nota.valor_total,
+            "compra_gerada": compra_gerada,
+            "compra_confirmada": compra_confirmada,
+            "compra_id": nota.compra_id,
+            "status_nota": nota.status,
             "itens": rows,
         }
 

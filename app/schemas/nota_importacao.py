@@ -45,6 +45,11 @@ class NotaImportacaoPreviewResponse(BaseModel):
 
     valor_total_nota: Optional[float] = None
 
+    compra_gerada: bool = False
+    compra_confirmada: bool = False
+    compra_id: Optional[int] = None
+    status_nota: Optional[str] = None
+
     itens: List[NotaImportacaoPreviewItem]
 
 

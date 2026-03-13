@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import datetime
 from typing import Optional
-
+from datetime import date
 from pydantic import BaseModel, Field
 
 
@@ -88,12 +88,15 @@ class NotaItemCriarProdutoRequest(BaseModel):
     custo_medio: Optional[float] = Field(default=None, ge=0)
     preco_reposicao: Optional[float] = Field(default=None, ge=0)
 
-    embalagem_id: Optional[int] = Field(default=None, gt=0)
     unidade_informada_id: int = Field(gt=0)
     fator_para_base: float = Field(gt=0)
 
+    nome_embalagem: Optional[str] = Field(default=None, max_length=40)
     barcode_final: Optional[str] = Field(default=None, max_length=64)
-    lote_id: Optional[int] = Field(default=None, gt=0)
+
+    codigo_lote: Optional[str] = Field(default=None, max_length=80)
+    local_id: Optional[int] = Field(default=None, gt=0)
+    validade_lote: Optional[date] = None
 
     observacao: Optional[str] = None
 
